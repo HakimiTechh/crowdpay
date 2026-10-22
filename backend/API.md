@@ -4,6 +4,8 @@
 
 In development, browse the interactive API docs at `GET /api/docs`.
 
+Notification delivery is partitioned by channel (see [Notification delivery queues](#notification-delivery-queues) below).
+
 ## Important Notes
 
 ### Timestamps
@@ -12,6 +14,27 @@ All timestamps (like campaign deadlines) **must be in ISO 8601 format with a UTC
 ### Public API lifecycle
 `GET /api/v1/changelog` returns the v1 changelog without authentication. To announce a sunset, configure both `PUBLIC_API_DEPRECATION_DATE` and `PUBLIC_API_SUNSET_DATE` as ISO 8601 timestamps, with the sunset later than the deprecation date. The v1 API will then include the RFC 9745 `Deprecation` header, the HTTP-date `Sunset` header, and a `Link` to the changelog on every response. Leave either variable unset to avoid announcing a deprecation.
 
+## Notification delivery queues
+
+High-volume notification delivery is partitioned by channel so that a backlog on one channel cannot starve another. Each channel has its own queue, worker concurrency, and retry/backoff policy. The set of channels is fixed and validated at startup; unknown channels are rejected.
+
+Supported channels:
+
+| Channel | Purpose |
+|---|---|
+| `email` | Transactional email (verification, gifts, exports) |
+| `in_app` | In-app notification rows |
+| `push` | Mobile/web push notifications |
+| `webhook` | Outbound webhook deliveries |
+
+Operational notes:
+
+- Each channel queue is drained independently; a stalled `email` provider does not delay `in_app` or `push` delivery.
+- Retries use exponential backoff per channel and are capped by `NOTIFICATION_MAX_ATTEMPTS` (default `5`). Exhausted messages are moved to a per-channel dead-letter store for inspection.
+- Queue depth and dead-letter counts are exposed per channel via `GET /health/notifications` (see below).
+- Partitioning is internal to the delivery layer; the notification payload schema and existing endpoints are unchanged, so no client migration is required.
+- Message payloads must not contain secrets (wallet secret ciphertext, API key hashes, session IP addresses/user agents). Delivery logs record channel, attempt count, and message id only.
+
 ## Contribution conversion model
 
 - Campaigns define a default settlement asset via `campaigns.asset_type` (`USDC` or `XLM`).
@@ -19,6 +42,8 @@ All timestamps (like campaign deadlines) **must be in ISO 8601 format with a UTC
 - If `send_asset !== campaign.asset_type`, the backend uses Stellar `pathPaymentStrictReceive` so the campaign receives the exact requested `amount` in its settlement asset.
 - Conversion path discovery uses Stellar Horizon `strictReceivePaths` and applies a `5%` slippage buffer when computing `sendMax`.
 - Additional credit assets can be enabled through `STELLAR_EXTRA_ASSETS` in `.env` as a JSON object (`{"CODE":"ISSUER"}`).
+
+## Endpoints
 
 ## Endpoints
 
@@ -538,6 +563,10 @@ Public JSON snapshot for operations: Horizon **cursor** row per active campaign 
 
 The backend also logs a **warning** every 5 minutes if any wallet is in that stale state.
 
+### `GET /health/notifications`
+
+Public JSON snapshot for operations: per-channel queue depth (`pending`, `in_flight`, `dead_letter`) and the last successful delivery timestamp for each notification channel (`email`, `in_app`, `push`, `webhook`). Channels are reported independently so a backlog on one channel is visible without masking the health of the others.
+
 ## Test coverage
 
 `node --test src/**/*.test.js` includes route coverage for:
@@ -551,6 +580,8 @@ The backend also logs a **warning** every 5 minutes if any wallet is in that sta
 - withdrawal request creation with multisig validation
 - withdrawal creator/platform approval flow
 - withdrawal denial paths (missing creator approval, insufficient signatures)
+- notification delivery partitions messages by channel and drains each channel independently
+- notification delivery retries with backoff and moves exhausted messages to the per-channel dead-letter store
 
 
 ## Creator payout forecast and reserve breakdown
