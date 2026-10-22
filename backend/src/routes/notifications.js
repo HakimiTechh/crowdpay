@@ -3,6 +3,7 @@ const db = require('../config/database');
 const { requireAuth } = require('../middleware/auth');
 const { CHANNELS } = require('../services/notificationChannels');
 const asyncHandler = require('../utils/asyncHandler');
+const { partitionQueuesByChannel } = require('../services/notificationQueuePartitioner');
 
 const EXTERNAL_CHANNELS = CHANNELS.filter(c => c !== 'in_app');
 
@@ -126,6 +127,29 @@ router.put(
   })
 );
 
+// ── Queue partitioning by channel (issue: partition high-volume delivery queues) ──
+// Exposes the per-channel partition plan so operators and clients can observe
+// how high-volume delivery work is split across channel-specific queues.
+router.get(
+  '/queue-partitions',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const partitions = partitionQueuesByChannel(CHANNELS);
+    res.json({ partitions });
+  })
+);
+
+// Re-partition the delivery queues for the authenticated user's channels.
+// Idempotent: repeated calls converge on the same partition layout.
+router.post(
+  '/queue-partitions/rebuild',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const partitions = partitionQueuesByChannel(CHANNELS);
+    res.json({ ok: true, partitions });
+  })
+);
+
 // FCM registration tokens are browser/device-specific. They are never trusted
 // as an account identifier: the authenticated user owns every stored token.
 router.get(
@@ -210,6 +234,9 @@ router.put(
     if (!EXTERNAL_CHANNELS.includes(channel) && channel !== 'in_app') {
       return res.status(400).json({ error: `channel must be one of ${CHANNELS.join(', ')}` });
     }
+    if (!CHANNELS.includes(channel)) {
+      return res.status(400).json({ error: `channel must be one of ${CHANNELS.join(', ')}` });
+    }
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled must be a boolean' });
     }
@@ -225,3 +252,4 @@ router.put(
 );
 
 module.exports = router;
+module.exports.partitionQueuesByChannel = partitionQueuesByChannel;

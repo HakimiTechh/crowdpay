@@ -70,7 +70,7 @@ test('PUT /channel-settings upserts and echoes stored destinations', async () =>
   assert.equal(upsert.params[0], 'user-1');
 });
 
-test('PUT /channel-settings rejects out-of-range quiet hours', async () => {
+test('PUT -channel-settings rejects out-of-range quiet hours', async () => {
   const app = buildApp(async () => ({ rows: [] }));
 
   const res = await request(app)
